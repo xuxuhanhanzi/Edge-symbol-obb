@@ -1,5 +1,13 @@
 
-# model_run_train_complete.py
+# RV1106 grayscale OBB training entry.
+
+import sys
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
 from ultralytics import YOLO
 from ultralytics.models.yolo.obb.train import OBBTrainer
 from ultralytics.models.yolo.obb.val import OBBValidator

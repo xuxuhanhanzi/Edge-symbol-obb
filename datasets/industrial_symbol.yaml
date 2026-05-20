@@ -1,0 +1,27 @@
+# Industrial barcode and QR-code OBB dataset.
+# Update `path` when running on a different machine.
+
+path: /root/autodl-tmp/yolo_dataset_gray
+train:
+  - train/images
+val:
+  - val/images
+test:
+  - val/images
+
+names:
+  0: BARCODE
+  1: DM
+  2: HANXIN
+  3: QR
+  4: PDF
+  5: AZTEC
+  6: CODEONE
+  7: DOT
+  8: GM
+  9: MAXI
+  10: MPDF
+  11: MQR
+  12: RMQR
+  13: ULTRA
+  14: UPN

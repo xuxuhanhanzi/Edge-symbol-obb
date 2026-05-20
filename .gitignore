@@ -75,13 +75,17 @@ pip-log.txt
 pip-delete-this-directory.txt
 
 # Training, experiment and tracking output
-/datasets/
+/datasets/*
+!/datasets/README.md
+!/datasets/*.yaml
 /data/
 /runs/
 /wandb/
 /mlruns/
 /rknn_logs/
 /rknn-toolkit2/
+/artifacts/local/*
+!/artifacts/local/README.md
 
 # Local dataset lists and machine-specific model config
 /dataset.txt

@@ -11,6 +11,7 @@ requests>=2.23.0
 scipy>=1.4.1
 torch>=1.7.0
 torchvision>=0.8.1
+timm>=0.9.16
 tqdm>=4.64.0
 
 # Logging -------------------------------------
@@ -43,4 +44,3 @@ py-cpuinfo  # display CPU info
 # albumentations>=1.0.3  # training augmentations
 # pycocotools>=2.0.6  # COCO mAP
 # roboflow
-
