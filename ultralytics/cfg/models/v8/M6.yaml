@@ -1,0 +1,47 @@
+nc: 15
+ch: 1
+
+npu_channels:
+  C1: &C1 16
+  C2: &C2 32
+  C3: &C3 64
+  C4: &C4 128
+  C5: &C5 192
+
+scales:
+  n: [1.0, 1.0, 1024]
+
+backbone:
+  - [-1, 1, Conv, [*C1, 3, 2]]
+  - [-1, 1, GhostConv, [*C2, 3, 2]]
+  - [-1, 1, C3Ghost, [*C2, True]]
+
+  - [-1, 1, GhostConv, [*C3, 3, 2]]
+  - [-1, 1, C3Ghost, [*C3, True]]
+
+  - [-1, 1, GhostConv, [*C4, 3, 2]]
+  - [-1, 1, RepNCSPELAN4, [*C4, *C4, 64, 1]]
+
+  - [-1, 1, GhostConv, [*C5, 3, 2]]
+  - [-1, 1, RepNCSPELAN4, [*C5, *C5, 96, 1]]
+
+  - [-1, 1, SPPF, [*C5, 5]]
+
+head:
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 6], 1, Concat, [1]]
+  - [-1, 1, C3Ghost, [*C4, False]]
+
+  - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
+  - [[-1, 4], 1, Concat, [1]]
+  - [-1, 1, C3Ghost, [*C3, False]]
+
+  - [-1, 1, GhostConv, [*C3, 3, 2]]
+  - [[-1, 12], 1, Concat, [1]]
+  - [-1, 1, C3Ghost, [*C4, False]]
+
+  - [-1, 1, GhostConv, [*C4, 3, 2]]
+  - [[-1, 9], 1, Concat, [1]]
+  - [-1, 1, RepNCSPELAN4, [*C5, *C5, 96, 1]]
+
+  - [[15, 18, 21], 1, OBB, [15, 1]]

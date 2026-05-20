@@ -1,0 +1,133 @@
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+.cache/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.hypothesis/
+
+# Virtual environments and local environment files
+.env
+.env.*
+!.env.example
+.venv/
+venv/
+env/
+ENV/
+__pypackages__/
+
+# Build and packaging output
+build/
+dist/
+develop-eggs/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+pip-wheel-metadata/
+*.egg-info/
+*.egg
+MANIFEST
+
+# Test and coverage output
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+
+# IDE, notebook and OS metadata
+.idea/
+.vscode/
+.spyderproject
+.spyproject
+.ropeproject
+.ipynb_checkpoints/
+/git_upload_Edge_symbol_obb_probe/
+.DS_Store
+Thumbs.db
+
+# Documentation builds
+/site/
+docs/_build/
+mkdocs_github_authors.yaml
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+*.swp
+*.swo
+pip-log.txt
+pip-delete-this-directory.txt
+
+# Training, experiment and tracking output
+/datasets/
+/data/
+/runs/
+/wandb/
+/mlruns/
+/rknn_logs/
+/rknn-toolkit2/
+
+# Local dataset lists and machine-specific model config
+/dataset.txt
+/dataset_rknn.txt
+/weight.yaml
+/untitled.txt
+/LL_Pruning/error_report.txt
+
+# Model weights, exports and generated inference artifacts
+weights/
+*.weights
+*.pt
+*.pth
+*.pb
+*.onnx
+*.engine
+*.mlmodel
+*.mlpackage
+*.torchscript
+*.tflite
+*.h5
+*.rknn
+*.npy
+*_saved_model/
+*_web_model/
+*_openvino_model/
+*_paddle_model/
+*_ncnn_model/
+pnnx*
+
+# Native/vendor binary packages
+*.so
+*.pyd
+*.dll
+*.dylib
+*.a
+*.lib
+*.whl
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# Media generated during training/evaluation
+*.mp4
+*.avi
+*.mov
+*.mkv
