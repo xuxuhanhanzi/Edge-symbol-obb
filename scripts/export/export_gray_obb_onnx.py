@@ -1,5 +1,8 @@
-# Export grayscale OBB weights to ONNX.
+"""Export grayscale OBB weights to ONNX with command-line arguments."""
 
+from __future__ import annotations
+
+import argparse
 import sys
 from pathlib import Path
 
@@ -12,47 +15,68 @@ from ultralytics.nn.autobackend import AutoBackend
 import ultralytics.utils.checks as checks
 
 
-# ============================================================
-# 单通道灰度模型导出辅助
-# ============================================================
-
-# 关闭 AMP 检查，避免官方默认 3 通道测试影响导出
-checks.check_amp = lambda *args, **kwargs: True
-
-# 修复 AutoBackend warmup 默认 3 通道问题
-original_autobackend_warmup = AutoBackend.warmup
-
-
-def custom_autobackend_warmup(self, imgsz=(1, 1, 256, 256)):
-    try:
-        expected_c = next(self.model.parameters()).shape[1]
-        if isinstance(imgsz, tuple) and len(imgsz) == 4:
-            imgsz = (imgsz[0], expected_c, imgsz[2], imgsz[3])
-    except Exception:
-        pass
-
-    return original_autobackend_warmup(self, imgsz=imgsz)
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--weights",
+        default="runs/obb/rv1106_m2_baseline_e100_b256/weights/best.pt",
+        help="PyTorch .pt weights to export.",
+    )
+    parser.add_argument("--imgsz", type=int, default=256, help="Export image size.")
+    parser.add_argument("--batch", type=int, default=1, help="Static export batch size.")
+    parser.add_argument("--opset", type=int, default=19, help="ONNX opset version.")
+    parser.add_argument("--device", default=0, help="CUDA device id or cpu.")
+    parser.add_argument("--half", action="store_true", help="Export FP16 ONNX.")
+    parser.add_argument("--dynamic", action="store_true", help="Export with dynamic axes.")
+    parser.add_argument("--simplify", action="store_true", help="Run ONNX simplifier.")
+    return parser.parse_args()
 
 
-AutoBackend.warmup = custom_autobackend_warmup
+def install_grayscale_export_patch() -> None:
+    """Patch AutoBackend warmup to respect one-channel grayscale models."""
+    checks.check_amp = lambda *args, **kwargs: True
+
+    original_autobackend_warmup = AutoBackend.warmup
+
+    def custom_autobackend_warmup(self, imgsz=(1, 1, 256, 256)):
+        try:
+            expected_c = next(self.model.parameters()).shape[1]
+            if isinstance(imgsz, tuple) and len(imgsz) == 4:
+                imgsz = (imgsz[0], expected_c, imgsz[2], imgsz[3])
+        except Exception:
+            pass
+        return original_autobackend_warmup(self, imgsz=imgsz)
+
+    AutoBackend.warmup = custom_autobackend_warmup
+
+
+def main() -> int:
+    args = parse_args()
+    install_grayscale_export_patch()
+
+    weights = Path(args.weights)
+    if not weights.exists():
+        raise FileNotFoundError(f"Weights not found: {weights}")
+
+    print(f"export_weights={weights}")
+    print(f"export_imgsz={args.imgsz}")
+    print(f"export_opset={args.opset}")
+
+    model = YOLO(str(weights))
+    result = model.export(
+        format="onnx",
+        imgsz=args.imgsz,
+        batch=args.batch,
+        opset=args.opset,
+        simplify=args.simplify,
+        dynamic=args.dynamic,
+        half=args.half,
+        device=args.device,
+    )
+
+    print(f"onnx_export={result}")
+    return 0
 
 
 if __name__ == "__main__":
-    # 改成你的 best.pt 实际路径
-    model_path = "runs/obb/qr_obb_rv11067/weights/best.pt"
-
-    model = YOLO(model_path)
-
-    result = model.export(
-        format="onnx",
-        imgsz=256,
-        batch=1,
-        opset=19,
-        simplify=False,
-        dynamic=False,
-        half=False,
-        device=0,
-    )
-
-    print("ONNX export success:")
-    print(result)
+    raise SystemExit(main())

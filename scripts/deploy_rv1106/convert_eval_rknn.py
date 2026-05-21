@@ -1,3 +1,4 @@
+import argparse
 import os
 import time
 import math
@@ -9,7 +10,46 @@ from rknn.api import RKNN
 import sys
 from datetime import datetime
 
-LOG_DIR = "/root/ultralytics_yolov8-main/rknn_logs"
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Convert grayscale OBB ONNX to RKNN and evaluate it.")
+    parser.add_argument(
+        "--onnx",
+        default="runs/obb/rv1106_m2_baseline_e100_b256/weights/best.onnx",
+        help="Input ONNX model path.",
+    )
+    parser.add_argument(
+        "--rknn",
+        default="runs/obb/rv1106_m2_baseline_e100_b256/weights/best_int8_rv1106.rknn",
+        help="Output RKNN model path.",
+    )
+    parser.add_argument("--image-dir", default="/root/autodl-tmp/yolo_dataset_gray/val/images")
+    parser.add_argument("--label-dir", default="/root/autodl-tmp/yolo_dataset_gray/val/labels")
+    parser.add_argument("--dataset-txt", default="artifacts/local/dataset_rknn.txt")
+    parser.add_argument("--log-dir", default="rknn_logs")
+    parser.add_argument("--save-dir", default="artifacts/local/rknn_inference_results")
+    parser.add_argument("--target-platform", default="rv1106")
+    parser.add_argument(
+        "--runtime-target",
+        default=None,
+        help="Runtime target for load_rknn evaluation on real hardware. Leave unset for simulator build+eval.",
+    )
+    parser.add_argument("--imgsz", type=int, default=256)
+    parser.add_argument("--conf", type=float, default=0.25)
+    parser.add_argument("--iou", type=float, default=0.7)
+    parser.add_argument("--topk", type=int, default=300)
+    parser.add_argument("--quant-images", type=int, default=500)
+    parser.add_argument("--debug-images", type=int, default=0, help="Evaluate first N images only; 0 evaluates all.")
+    parser.add_argument("--no-quant", action="store_true", help="Build FP32 RKNN instead of INT8.")
+    parser.add_argument("--no-save-inference", action="store_true")
+    parser.add_argument("--build-only", action="store_true")
+    parser.add_argument("--eval-only", action="store_true", help="Load an existing RKNN and run evaluation only.")
+    return parser.parse_args()
+
+
+ARGS = parse_args()
+
+LOG_DIR = ARGS.log_dir
 os.makedirs(LOG_DIR, exist_ok=True)
 
 log_path = os.path.join(
@@ -37,27 +77,27 @@ sys.stderr = Tee(sys.stderr, log_file)
 print(f"Log saved to: {log_path}")
 
 # ===================== 配置 =====================
-ONNX_PATH = "/root/ultralytics_yolov8-main/runs/obb/qr_obb_rv11067/weights/best.onnx"
-DATASET_TXT = "/root/ultralytics_yolov8-main/dataset_rknn.txt"
-RKNN_PATH = "/root/ultralytics_yolov8-main/runs/obb/qr_obb_rv11067/weights/best_4head_rv1106.rknn"
+ONNX_PATH = ARGS.onnx
+DATASET_TXT = ARGS.dataset_txt
+RKNN_PATH = ARGS.rknn
 
-IMAGE_DIR = "/root/autodl-tmp/yolo_dataset_gray/val/images"
-LABEL_DIR = "/root/autodl-tmp/yolo_dataset_gray/val/labels"
+IMAGE_DIR = ARGS.image_dir
+LABEL_DIR = ARGS.label_dir
 
 
-SAVE_DIR = "/root/ultralytics_yolov8-main/rknn_inference_results"
-SAVE_INFERENCE = True
-DEBUG_MODE = False
+SAVE_DIR = ARGS.save_dir
+SAVE_INFERENCE = not ARGS.no_save_inference
+DEBUG_IMAGES = ARGS.debug_images
 
-TARGET_PLATFORM = "rv1106"
-DO_QUANTIZATION = True
+TARGET_PLATFORM = ARGS.target_platform
+DO_QUANTIZATION = not ARGS.no_quant
 
-INPUT_SIZE = (256, 256)
+INPUT_SIZE = (ARGS.imgsz, ARGS.imgsz)
 BG_COLOR = 114
 
-CONF_THRESH = 0.25
-NMS_THRESH = 0.7
-TOPK = 300
+CONF_THRESH = ARGS.conf
+NMS_THRESH = ARGS.iou
+TOPK = ARGS.topk
 
 CLASSES = [
     "BARCODE", "DM", "HANXIN", "QR", "PDF",
@@ -70,6 +110,10 @@ REG_MAX = 8
 
 # ===================== 数据集文件 =====================
 def make_dataset_txt(image_dir, txt_path, max_images=500):
+    txt_dir = os.path.dirname(txt_path)
+    if txt_dir:
+        os.makedirs(txt_dir, exist_ok=True)
+
     imgs = sorted([
         os.path.join(image_dir, f)
         for f in os.listdir(image_dir)
@@ -297,11 +341,14 @@ def process(outputs, shape, scale, px, py, conf_thresh):
 
 
 def compute_ap(prec, rec):
-    ap = 0.0
-    for t in np.linspace(0, 1, 11):
-        mask = rec >= t
-        ap += np.max(prec[mask]) / 11.0 if np.any(mask) else 0.0
-    return ap
+    """Compute AP using a precision envelope and continuous PR integration."""
+    mrec = np.concatenate(([0.0], rec, [1.0]))
+    mpre = np.concatenate(([1.0], prec, [0.0]))
+
+    mpre = np.flip(np.maximum.accumulate(np.flip(mpre)))
+
+    x = np.linspace(0, 1, 101)
+    return float(np.trapz(np.interp(x, mrec, mpre), x))
 
 
 def draw_result(img, gts, dets):
@@ -334,7 +381,7 @@ def build_rknn():
         raise FileNotFoundError(f"ONNX not found: {ONNX_PATH}")
 
     if DO_QUANTIZATION:
-        make_dataset_txt(IMAGE_DIR, DATASET_TXT, max_images=500)
+        make_dataset_txt(IMAGE_DIR, DATASET_TXT, max_images=ARGS.quant_images)
 
     rknn = RKNN(verbose=False)
 
@@ -361,6 +408,9 @@ def build_rknn():
         raise RuntimeError("Build RKNN failed")
 
     print(f"--> Export RKNN: {RKNN_PATH}")
+    rknn_dir = os.path.dirname(RKNN_PATH)
+    if rknn_dir:
+        os.makedirs(rknn_dir, exist_ok=True)
     ret = rknn.export_rknn(RKNN_PATH)
     if ret != 0:
         raise RuntimeError("Export RKNN failed")
@@ -369,9 +419,28 @@ def build_rknn():
 
 
 # ===================== RKNN 推理评估 =====================
+def load_existing_rknn():
+    if ARGS.runtime_target is None:
+        raise RuntimeError(
+            "--eval-only uses RKNN.load_rknn(), which cannot run with simulator target=None. "
+            "On AutoDL, rerun without --eval-only so the script uses load_onnx + build + simulator inference. "
+            "Use --eval-only only with --runtime-target on real RKNN hardware."
+        )
+
+    if not os.path.exists(RKNN_PATH):
+        raise FileNotFoundError(f"RKNN not found: {RKNN_PATH}")
+
+    rknn = RKNN(verbose=False)
+    print(f"--> Load RKNN: {RKNN_PATH}")
+    ret = rknn.load_rknn(RKNN_PATH)
+    if ret != 0:
+        raise RuntimeError("Load RKNN failed")
+    return rknn
+
+
 def eval_rknn(rknn):
     print("--> Init RKNN runtime")
-    ret = rknn.init_runtime(target=None)
+    ret = rknn.init_runtime(target=ARGS.runtime_target)
     if ret != 0:
         raise RuntimeError("Init runtime failed")
 
@@ -383,8 +452,8 @@ def eval_rknn(rknn):
         if f.lower().endswith((".jpg", ".jpeg", ".png", ".bmp"))
     ])
 
-    if DEBUG_MODE:
-        imgs = imgs[:50]
+    if DEBUG_IMAGES > 0:
+        imgs = imgs[:DEBUG_IMAGES]
 
     print(f"--> Start RKNN inference: {len(imgs)} images")
 
@@ -498,6 +567,7 @@ def eval_rknn(rknn):
     print(f"CONF_THRESH          : {CONF_THRESH}")
     print(f"NMS_THRESH           : {NMS_THRESH}")
     print(f"TOPK                 : {TOPK}")
+    print("AP method            : continuous precision-envelope integration")
     print(f"mAP@0.5              : {final_map:.4f}")
 
     if infer_times:
@@ -511,8 +581,9 @@ def eval_rknn(rknn):
 def main():
     rknn = None
     try:
-        rknn = build_rknn()
-        eval_rknn(rknn)
+        rknn = load_existing_rknn() if ARGS.eval_only else build_rknn()
+        if not ARGS.build_only:
+            eval_rknn(rknn)
     finally:
         if rknn is not None:
             rknn.release()

@@ -7,3 +7,9 @@
 - `eval_onnx_4head.py`: 评估 4-head ONNX 输出。
 - `compare_std_vs_4head.py`: 对比标准 ONNX 输出和 4-head ONNX 输出。
 - `val_onnx_gray.py`: 通过 Ultralytics validator 验证灰度 ONNX。
+
+示例：
+
+```text
+python -B scripts/eval/val_onnx_gray.py --weights runs/obb/rv1106_m2_baseline_e100_b256/weights/best.onnx --data datasets/industrial_symbol.yaml --imgsz 256
+```
