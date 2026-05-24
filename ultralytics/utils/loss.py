@@ -857,6 +857,9 @@ class v8OBBLoss(v8DetectionLoss):
         super().__init__(model)
         self.assigner = RotatedTaskAlignedAssigner(topk=10, num_classes=self.nc, alpha=0.5, beta=6.0)
         self.bbox_loss = RotatedBboxLoss(self.reg_max).to(self.device)
+        self.angle_gain = float(getattr(self.hyp, "angle", 5.0))
+        self.qg_angle_align = float(getattr(self.hyp, "qg_angle_align", 0.25))
+        self.qg_angle_unit = float(getattr(self.hyp, "qg_angle_unit", 0.05))
 
     def preprocess(self, targets, batch_size, scale_tensor):
         """Preprocesses the target counts and matches with the input batch size to output a tensor."""
@@ -891,6 +894,8 @@ class v8OBBLoss(v8DetectionLoss):
         pred_scores = pred_scores.permute(0, 2, 1).contiguous()
         pred_distri = pred_distri.permute(0, 2, 1).contiguous()
         pred_angle = pred_angle.permute(0, 2, 1).contiguous()
+        pred_angle_raw = pred_angle
+        pred_angle = self.decode_angle(pred_angle_raw)
 
         dtype = pred_scores.dtype
         imgsz = torch.tensor(feats[0].shape[2:], device=self.device, dtype=dtype) * self.stride[0]  # image size (h,w)
@@ -948,19 +953,29 @@ class v8OBBLoss(v8DetectionLoss):
             loss[3] = self.calculate_angle_loss(
                 pred_bboxes, target_bboxes, fg_mask, weight, target_scores_sum
             )
+            loss[3] += self.calculate_angle_vector_loss(
+                pred_angle_raw, target_bboxes, fg_mask, weight, target_scores_sum
+            )
 
         else:
-            loss[0] += (pred_angle * 0).sum()  # 确保在没有目标时张量保持非空
+            loss[0] += (pred_angle_raw * 0).sum()  # 确保在没有目标时张量保持非空
 
         # 乘以各项的超参数增益权重
         loss[0] *= self.hyp.box  # box gain 
         loss[1] *= self.hyp.cls  # cls gain
         loss[2] *= self.hyp.dfl  # dfl gain
 
-        angle_gain = 5.0
-        loss[3] *= angle_gain  # angle gain
+        loss[3] *= self.angle_gain  # angle gain
 
         return loss.sum() * batch_size, loss.detach()
+
+    def decode_angle(self, pred_angle):
+        """Decode scalar theta or QG unit-cycle angle vectors to scalar theta."""
+        if pred_angle.shape[-1] == 1:
+            return pred_angle
+        if pred_angle.shape[-1] == 2:
+            return 0.5 * torch.atan2(pred_angle[..., 0:1], pred_angle[..., 1:2])
+        raise RuntimeError(f"Unsupported OBB angle channels: {pred_angle.shape[-1]}")
 
     def bbox_decode(self, anchor_points, pred_dist, pred_angle):
         """Decode predicted object bounding box coordinates from anchor points and distribution."""
@@ -968,6 +983,25 @@ class v8OBBLoss(v8DetectionLoss):
             b, a, c = pred_dist.shape  # batch, anchors, channels
             pred_dist = pred_dist.view(b, a, 4, c // 4).softmax(3).matmul(self.proj.type(pred_dist.dtype))
         return torch.cat((dist2rbox(pred_dist, pred_angle, anchor_points), pred_angle), dim=-1)
+
+    def calculate_angle_vector_loss(self, pred_angle_raw, target_bboxes, fg_mask, weight, target_scores_sum):
+        """Unit-cycle alignment loss for QG angle vectors."""
+        if pred_angle_raw.shape[-1] != 2:
+            return (pred_angle_raw * 0).sum()
+
+        pred_vec = pred_angle_raw[fg_mask]
+        target_theta = target_bboxes[..., 4][fg_mask]
+        target_vec = torch.stack(
+            (torch.sin(2 * target_theta), torch.cos(2 * target_theta)),
+            dim=-1,
+        ).to(dtype=pred_vec.dtype)
+
+        pred_norm = pred_vec.norm(dim=-1, keepdim=True).clamp_min(1e-6)
+        pred_unit = pred_vec / pred_norm
+        align_loss = 1.0 - (pred_unit * target_vec).sum(dim=-1)
+        unit_loss = (pred_norm.squeeze(-1) - 1.0).pow(2)
+        qg_loss = (self.qg_angle_align * align_loss + self.qg_angle_unit * unit_loss) * weight
+        return qg_loss.sum() / target_scores_sum
 
     # 【修改点 3】：引入教科书级别的周期性角度损失逻辑
     def calculate_angle_loss(self, pred_bboxes, target_bboxes, fg_mask, weight, target_scores_sum, lambda_val=5):

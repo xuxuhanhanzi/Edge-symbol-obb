@@ -438,7 +438,11 @@ class Exporter:
 
 
         if self.model.task == "obb":
-            output_names = ["loc_head0", "loc_head1", "loc_head2", "angle_head"]
+            head = self.model.model[-1]
+            if getattr(head, "ne", 1) == 2 and getattr(head, "_use_split_qg_angle", lambda: False)():
+                output_names = ["loc_head0", "loc_head1", "loc_head2", "angle_sin_head", "angle_cos_head"]
+            else:
+                output_names = ["loc_head0", "loc_head1", "loc_head2", "angle_head"]
         elif isinstance(self.model, SegmentationModel):
             output_names = ["output0", "output1"]
         else:

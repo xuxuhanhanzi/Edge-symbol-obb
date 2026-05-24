@@ -106,6 +106,7 @@ CLASSES = [
 ]
 NUM_CLASSES = len(CLASSES)
 REG_MAX = 8
+TOTAL_ANCHORS = sum((INPUT_SIZE[0] // s) ** 2 for s in (8, 16, 32))
 
 
 # ===================== 数据集文件 =====================
@@ -246,17 +247,34 @@ def dfl_decode(box_feat):
 
 
 # ===================== RKNN 输出后处理 =====================
+def decode_angle_slice(angle_vec, start, end):
+    """Decode scalar theta or QG [sin(2theta), cos(2theta)] angle output slice."""
+    if angle_vec.size == TOTAL_ANCHORS:
+        return angle_vec[start:end]
+    if angle_vec.size == TOTAL_ANCHORS * 2:
+        sin2 = angle_vec[start:end]
+        cos2 = angle_vec[TOTAL_ANCHORS + start:TOTAL_ANCHORS + end]
+        return 0.5 * np.arctan2(sin2, cos2)
+    raise ValueError(f"Unsupported angle output length={angle_vec.size}, expected {TOTAL_ANCHORS} or {TOTAL_ANCHORS * 2}")
+
+
 def process(outputs, shape, scale, px, py, conf_thresh):
     feats = []
     angle_vec = None
+    angle_parts = []
 
     for out in outputs:
         if len(out.shape) == 4 and out.shape[1] in (47, 48):
             feats.append(out)
-        elif len(out.shape) == 3 and out.shape[-1] == 1344:
+        elif len(out.shape) == 3 and out.shape[-1] == TOTAL_ANCHORS:
+            angle_parts.append(out.reshape(-1))
+        elif len(out.shape) == 2 and out.shape[-1] in (TOTAL_ANCHORS, TOTAL_ANCHORS * 2):
             angle_vec = out.reshape(-1)
-        elif len(out.shape) == 2 and out.shape[-1] == 1344:
-            angle_vec = out.reshape(-1)
+
+    if angle_vec is None and len(angle_parts) == 1:
+        angle_vec = angle_parts[0]
+    elif angle_vec is None and len(angle_parts) == 2:
+        angle_vec = np.concatenate(angle_parts, axis=0)
 
     if angle_vec is None:
         angle_vec = outputs[3].reshape(-1)
@@ -282,7 +300,7 @@ def process(outputs, shape, scale, px, py, conf_thresh):
             continue
 
         start, end = angle_offsets[gw]
-        angle_slice = angle_vec[start:end]
+        angle_slice = decode_angle_slice(angle_vec, start, end)
 
         box_feat = feat[:, :32, :, :].reshape(1, 32, -1)
 

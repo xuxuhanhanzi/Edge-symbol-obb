@@ -6,6 +6,8 @@ import argparse
 import sys
 from pathlib import Path
 
+import torch.nn as nn
+
 ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
@@ -50,6 +52,64 @@ def install_grayscale_export_patch() -> None:
     AutoBackend.warmup = custom_autobackend_warmup
 
 
+def split_qg_angle_head_for_rknn(model) -> bool:
+    """Convert legacy QG angle Conv2d(out=2) heads to two Conv2d(out=1) heads for RKNN export."""
+    head = model.model[-1]
+    if getattr(head, "ne", None) != 2 or hasattr(head, "cv4_sin") or not hasattr(head, "cv4"):
+        return False
+
+    trunks = nn.ModuleList()
+    sin_heads = nn.ModuleList()
+    cos_heads = nn.ModuleList()
+
+    for seq in head.cv4:
+        layers = list(seq.children())
+        if not layers or not isinstance(layers[-1], nn.Conv2d) or layers[-1].out_channels != 2:
+            return False
+
+        last = layers[-1]
+        sin = nn.Conv2d(
+            last.in_channels,
+            1,
+            last.kernel_size,
+            last.stride,
+            last.padding,
+            last.dilation,
+            last.groups,
+            bias=last.bias is not None,
+            padding_mode=last.padding_mode,
+            device=last.weight.device,
+            dtype=last.weight.dtype,
+        )
+        cos = nn.Conv2d(
+            last.in_channels,
+            1,
+            last.kernel_size,
+            last.stride,
+            last.padding,
+            last.dilation,
+            last.groups,
+            bias=last.bias is not None,
+            padding_mode=last.padding_mode,
+            device=last.weight.device,
+            dtype=last.weight.dtype,
+        )
+        sin.weight.data.copy_(last.weight.data[0:1])
+        cos.weight.data.copy_(last.weight.data[1:2])
+        if last.bias is not None:
+            sin.bias.data.copy_(last.bias.data[0:1])
+            cos.bias.data.copy_(last.bias.data[1:2])
+
+        trunks.append(nn.Sequential(*layers[:-1]))
+        sin_heads.append(sin)
+        cos_heads.append(cos)
+
+    head.cv4 = trunks
+    head.cv4_sin = sin_heads
+    head.cv4_cos = cos_heads
+    return True
+
+
 def main() -> int:
     args = parse_args()
     install_grayscale_export_patch()
@@ -63,6 +123,8 @@ def main() -> int:
     print(f"export_opset={args.opset}")
 
     model = YOLO(str(weights))
+    if split_qg_angle_head_for_rknn(model.model):
+        print("qg_angle_export=split_sin_cos_heads")
     result = model.export(
         format="onnx",
         imgsz=args.imgsz,

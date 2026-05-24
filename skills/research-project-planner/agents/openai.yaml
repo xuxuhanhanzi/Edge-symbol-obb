@@ -1,0 +1,7 @@
+interface:
+  display_name: "Research Project Planner"
+  short_description: "Plan papers, experiments, and research evidence"
+  default_prompt: "Use $research-project-planner to organize this research project from paper discovery through experiment records and result claims."
+
+policy:
+  allow_implicit_invocation: true

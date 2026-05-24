@@ -255,7 +255,7 @@ class OBB(Detect):
 
         super().__init__(nc, ch)
 
-        self.ne = ne  # 角度 theta (1通道)
+        self.ne = ne  # angle channels: 1=scalar theta, 2=[sin(2theta), cos(2theta)]
 
         
 
@@ -406,7 +406,26 @@ class OBB(Detect):
     #     else:
     #         return (torch.cat([x[0], angle], 1), (x[1], angle))
 
+    def _decode_angle(self, angle):
+        """Decode raw OBB angle output to scalar theta for dist2rbox."""
+        if self.ne == 1 or angle.shape[1] == 1:
+            return angle
+        if self.ne == 2 and angle.shape[1] == 2:
+            return 0.5 * torch.atan2(angle[:, 0:1], angle[:, 1:2])
+        raise RuntimeError(f"Unsupported OBB angle channels: ne={self.ne}, shape={tuple(angle.shape)}")
 
+    def _use_split_qg_angle(self):
+        """Return True when QG angle branch uses separate sin/cos output heads."""
+        return self.ne == 2 and hasattr(self, "cv4_sin") and hasattr(self, "cv4_cos")
+
+    def _forward_angle_raw(self, x, bs):
+        """Forward raw angle branch output in scalar or QG split mode."""
+        if self._use_split_qg_angle():
+            angle_feats = [self.cv4[i](x[i]) for i in range(self.nl)]
+            sin2 = torch.cat([self.cv4_sin[i](angle_feats[i]).view(bs, 1, -1) for i in range(self.nl)], 2)
+            cos2 = torch.cat([self.cv4_cos[i](angle_feats[i]).view(bs, 1, -1) for i in range(self.nl)], 2)
+            return torch.cat((sin2, cos2), 1)
+        return torch.cat([self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2)
 
     def forward(self, x):
         """Concatenates and returns predicted bounding boxes, class probabilities, and angles."""
@@ -430,20 +449,19 @@ class OBB(Detect):
                 # 每个尺度输出：box + cls + obj
                 outs.append(torch.cat([box, cls, obj], 1))
 
-            angle = torch.cat(
-                [self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)],
-                2
-            )
+            angle = self._forward_angle_raw(x, bs)
+            if self._use_split_qg_angle():
+                return outs[0], outs[1], outs[2], angle[:, 0:1], angle[:, 1:2]
+            if self.ne == 2:
+                angle = angle.reshape(bs, -1)
 
             return outs[0], outs[1], outs[2], angle
 
         # ============================================================
         # 普通训练 / 普通推理 / 普通导出逻辑
         # ============================================================
-        angle = torch.cat(
-            [self.cv4[i](x[i]).view(bs, self.ne, -1) for i in range(self.nl)],
-            2
-        )
+        angle_raw = self._forward_angle_raw(x, bs)
+        angle = self._decode_angle(angle_raw)
 
         if not self.training:
             self.angle = angle
@@ -454,12 +472,12 @@ class OBB(Detect):
             del self.angle
 
         if self.training:
-            return x, angle
+            return x, angle_raw
 
         if self.export:
             return torch.cat([x, angle], 1)
         else:
-            return (torch.cat([x[0], angle], 1), (x[1], angle))
+            return (torch.cat([x[0], angle], 1), (x[1], angle_raw))
 
 
 

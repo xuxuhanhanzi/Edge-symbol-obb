@@ -1,473 +1,251 @@
-# Edge-symbol-obb 实验计划修正版
+﻿# 修正版实验方案
 
-## 1. 修正目的
+## 1. 方向修正
 
-原始 `Edge-symbol-obb_实验计划.md` 给出了项目目标、模块方向和论文实验构想。当前项目已经完成 baseline 阶段，因此本修正版不再停留在初始设想，而是基于已完成实验结果，对后续阶段做可执行修正。
+原实验方案过度强调在当前验证集上继续做更多 full-epoch 对比。根据目前结果，这已经不是最优先方向。
 
-本计划的核心变化：
+当前证据表明，现有验证集已经接近饱和：
 
-1. baseline 阶段已完成，不再作为待办项。
-2. RV1106 实机速度测试暂缓，因为当前没有端侧设备。
-3. 下一阶段优先进入模型改进，先做 QG-OBB Head。
-4. 每个模型改动都必须经过 PyTorch、ONNX、RKNN INT8 三段验证。
-5. simulator latency 只能作为链路调试参考，不作为最终部署速度。
+- RV1106-M2 scalar e100 约为 `mAP50=0.991`。
+- QG-OBB e100 约为 `mAP50=0.990`。
+- Official-style YOLOv8n-OBB gray e20 已达到约 `mAP50=0.977`、`mAP50-95=0.924`。
+- 多个类别已经接近满分，小幅指标差异不足以强力证明创新点有效。
 
-## 2. 当前项目定位
+因此，后续方向修正为：
 
-项目名称：
+1. 先完成所有计划创新点，并证明每个创新点都能跑通完整部署链路。
+2. 再建立更有区分度的评估协议，包括困难子集和外部数据集。
+3. 最后再启动正式、大规模对比实验。
 
-```text
-Edge-symbol-obb
-```
+## 2. 修正后的研究目标
 
-建议论文方向：
+本项目不应主张“当前创新点能在简单验证集上显著提升普通 FP32 精度”。
 
-```text
-Deployment-aware Lightweight Oriented Object Detection
-for Industrial Symbol Recognition on Resource-constrained Edge NPUs
-```
-
-当前任务：
+更稳妥、更有论文价值的目标是：
 
 ```text
-Industrial barcode / QR / 2D symbol oriented object detection
-using grayscale single-channel OBB models.
+在边缘设备约束下，提高灰度工业符号旋转检测的鲁棒性和部署可靠性，
+尤其关注 ONNX 导出和 RV1106 INT8 RKNN 量化后的稳定性。
 ```
 
-当前部署目标：
+正式结论应优先围绕以下方面建立：
 
-```text
-Rockchip RV1106 NPU
-```
+- 全链路可部署性：`PyTorch -> ONNX -> RKNN -> 后处理 -> 评估`。
+- INT8 保持率：ONNX mAP50 到 RKNN mAP50 的掉点。
+- 困难样本表现：QR、BARCODE、DM 在旋转、模糊、低对比、透视、小目标、复杂背景、部分裁切下的表现。
+- 边缘代价：模型大小、参数量、FLOPs、RKNN simulator 延迟，以及后续真实设备延迟。
 
-当前现实约束：
+## 3. 停止、保留、推迟
 
-- 已完成 RKNN INT8 simulator 验证。
-- 暂无 RV1106 实机设备。
-- 因此端侧 FPS/latency 结论暂不进入最终论文结果。
-
-## 3. 已完成内容
-
-### 3.1 项目工程化整理
-
-已完成：
-
-- 项目脚本按功能归入 `scripts/data/`, `scripts/train/`, `scripts/export/`, `scripts/eval/`, `scripts/deploy_rv1106/`。
-- RV1106 模型配置放入 `configs/rv1106/`。
-- 固定数据集入口为 `datasets/industrial_symbol.yaml`。
-- 关键实验记录归入 `docs/`。
-
-结论：
-
-项目已经具备可持续实验的基本工程结构。
-
-### 3.2 数据集验证
-
-已完成：
-
-- `scripts/data/check_labels.py`
-- `scripts/data/quarantine_bad_samples.py`
-
-处理结果：
-
-| Issue | Count |
-|---|---:|
-| checkpoint image | 6 |
-| orphan label | 3 |
-| zero-area label | 74 |
-| total quarantine actions | 83 |
-
-最终状态：
-
-```text
-status=PASS
-```
-
-### 3.3 RV1106-M2 PyTorch baseline
-
-训练命令：
-
-```bash
-python -B scripts/train/train_rv1106_smoke.py \
-  --name rv1106_m2_baseline_e100_b256 \
-  --epochs 100 \
-  --batch 512 \
-  --workers 16
-```
-
-正式结果：
-
-| Metric | Value |
-|---|---:|
-| Params | 2.14M |
-| FLOPs | 9.0G |
-| mAP50 | 0.991 |
-| mAP50-95 | 0.960 |
-| Training time | 1.154 h |
-| Weight size | 4.6 MB |
-
-结论：
-
-当前轻量 baseline 的 FP32 精度已经足够高，可以作为后续改进实验的对照基线。
-
-### 3.4 ONNX FP32 baseline
-
-已完成：
-
-- 参数化导出脚本 `scripts/export/export_gray_obb_onnx.py`
-- 参数化验证脚本 `scripts/eval/val_onnx_gray.py`
-- 灰度输入适配
-- OBB 4-head ONNX 输出 decode 适配
-
-ONNX 结果：
-
-| Metric | Value |
-|---|---:|
-| ONNX size | 8.2 MB |
-| Precision | 0.9846879004808976 |
-| Recall | 0.9795905864006227 |
-| mAP50 | 0.9904943591129942 |
-| mAP50-95 | 0.9596001726240346 |
-
-结论：
-
-ONNX 导出几乎无精度损失，导出链路成立。
-
-### 3.5 RKNN INT8 baseline
-
-已完成：
-
-- 参数化 RKNN 转换和评估脚本 `scripts/deploy_rv1106/convert_eval_rknn.py`
-- RKNN Toolkit2 环境验证
-- RKNN INT8 转换
-- RKNN simulator full validation
-- AP 计算从 11-point AP 修正为 continuous precision-envelope AP
-
-RKNN INT8 正式复评结果：
-
-| Metric | Value |
-|---|---:|
-| Log | `rknn_logs/rknn_eval_20260521_004405.txt` |
-| Eval images | 2635 |
-| Calibration images | 500 |
-| AP method | continuous precision-envelope integration |
-| RKNN INT8 AP@0.5 | 0.9846 |
-| ONNX FP32 mAP50 | 0.990494 |
-| Absolute drop | 0.0059 |
-
-结论：
-
-当前 RV1106-M2 lightweight baseline 的 RKNN INT8 精度验证通过。
-
-### 3.6 暂缓内容
-
-以下内容暂缓：
-
-```text
-Physical RV1106 board latency/FPS testing
-```
-
-原因：
-
-```text
-当前没有端侧 RV1106 设备。
-```
-
-记录要求：
-
-- simulator latency 不能写成最终部署速度。
-- 后续获得设备后再补测真实 NPU latency/FPS。
-
-## 4. 修正后的总实验路线
-
-修正后的实验路线如下：
-
-```text
-Stage 0: 工程整理与数据检查       Done
-Stage 1: PyTorch FP32 baseline     Done
-Stage 2: ONNX FP32 baseline        Done
-Stage 3: RKNN INT8 baseline        Done
-Stage 4: QG-OBB Head               Next
-Stage 5: SOF-FPN                   Pending
-Stage 6: GIS-Aug                   Pending
-Stage 7: Full model                Pending
-Stage 8: RV1106 real-device test   Deferred
-```
-
-## 5. 下一阶段：QG-OBB Head
-
-### 5.1 目标
-
-QG-OBB Head 的目标不是单纯增加精度，而是提升角度预测和 INT8 量化后的稳定性。
-
-核心问题：
-
-- 当前 OBB angle branch 使用单值角度预测。
-- 角度存在周期边界。
-- 量化后 angle branch 可能成为精度不稳定来源。
-- ONNX/RKNN 输出和后处理强依赖 angle 输出格式。
-
-因此 QG-OBB Head 必须从接口审计开始。
-
-### 5.2 第一阶段：接口审计
-
-需要分析的文件：
-
-| File | Purpose |
-|---|---|
-| `ultralytics/nn/modules/head.py` | 当前 OBB head 和 ONNX 4-head export |
-| OBB loss 相关文件 | angle loss 和训练监督 |
-| `scripts/eval/val_onnx_gray.py` | ONNX 4-head decode |
-| `scripts/deploy_rv1106/convert_eval_rknn.py` | RKNN output decode |
-| `configs/rv1106/yolov8n_obb_rv1106_m2.yaml` | 当前 baseline 模型结构 |
-
-产出：
-
-```text
-docs/qg_obb_head_design.md
-```
-
-该文档必须记录：
-
-- 当前 OBB head 输入输出 shape。
-- 当前 angle 输出范围。
-- 当前 angle decode 方式。
-- 当前 ONNX 4-head 输出格式。
-- 当前 RKNN 后处理如何使用 angle。
-- 改成 sin-cos 后需要同步修改的所有位置。
-
-### 5.3 第二阶段：最小 sin-cos Head
-
-优先做最小版本，不直接做 Gaussian / Cholesky。
-
-设计目标：
-
-```text
-angle scalar -> sin(theta), cos(theta)
-```
-
-基本策略：
-
-- box branch 不变。
-- cls branch 不变。
-- angle branch 输出从 1 channel 改为 2 channel。
-- decode 使用 `atan2(sin, cos)`。
-- loss 增加 unit-cycle 或 sin-cos 对齐约束。
-- ONNX/RKNN 后处理同步修改。
-
-原因：
-
-- sin-cos 是周期角度的低风险改法。
-- 便于调试。
-- 容易观察是否改善 INT8 稳定性。
-- 比 Gaussian/Cholesky 更适合第一轮实验。
-
-### 5.4 第三阶段：QG-OBB Head 完整实验
-
-实验流程：
-
-```text
-shape test
--> 1 epoch smoke train
--> 20 epoch quick train
--> 100 epoch full train
--> ONNX export
--> ONNX validation
--> RKNN INT8 conversion
--> RKNN INT8 validation
-```
-
-建议实验命名：
-
-| Experiment | Run Name |
-|---|---|
-| smoke | `rv1106_qg_sincos_smoke` |
-| quick | `rv1106_qg_sincos_e20_b512` |
-| full | `rv1106_qg_sincos_e100_b512` |
-
-通过标准：
-
-| Metric | Requirement |
-|---|---:|
-| PyTorch mAP50 | >= baseline - 0.003 |
-| PyTorch mAP50-95 | >= baseline - 0.005 |
-| ONNX export | PASS |
-| ONNX mAP drop | <= 0.005 |
-| RKNN INT8 AP@0.5 drop vs ONNX | <= 0.03 |
-| Params/FLOPs | 不明显增加 |
-
-若 QG-OBB Head 没有带来明显收益，但没有破坏 RKNN，则可以保留为 ablation 项；若破坏导出或 RKNN 后处理，则回退。
-
-## 6. 后续阶段：SOF-FPN
-
-### 6.1 目标
-
-提升多尺度符号、低质量图像和方向敏感目标的特征表达能力。
-
-### 6.2 实施原则
-
-先做轻量方向保持分支，不直接引入复杂频域算子。
-
-优先插入：
-
-```text
-P3 / P4
-```
-
-原因：
-
-- P3 对小符号和边缘细节敏感。
-- P4 兼顾语义和空间分辨率。
-- P5 改动风险更高，优先级较低。
-
-### 6.3 实验组
-
-| Experiment | Purpose |
-|---|---|
-| baseline neck | 当前结构 |
-| + orientation branch P3 | 小目标方向增强 |
-| + orientation branch P3/P4 | 多尺度方向增强 |
-| + lightweight fusion gate | 控制额外分支权重 |
-| full SOF-FPN | 完整 neck 改进 |
-
-建议命名：
-
-| Experiment | Run Name |
-|---|---|
-| smoke | `rv1106_sof_p3_smoke` |
-| quick | `rv1106_sof_p3_e20_b512` |
-| full | `rv1106_sof_p3_e100_b512` |
-
-通过标准：
-
-| Metric | Requirement |
-|---|---:|
-| mAP50-95 | baseline + 0.003 以上才算有效 |
-| Params increase | <= 10% |
-| FLOPs increase | <= 10% |
-| ONNX/RKNN | PASS |
-
-## 7. 后续阶段：GIS-Aug
-
-### 7.1 目标
-
-提升工业符号在复杂成像条件下的鲁棒性。
-
-### 7.2 增强类型
-
-优先做可控增强：
-
-- random rotation
-- perspective transform
-- motion blur
-- low light
-- reflection / glare
-- partial occlusion
-- small object scaling
-- large aspect-ratio variation
-
-暂不优先做复杂 diffusion synthetic data，因为那会引入额外变量，不适合作为当前下一步。
-
-### 7.3 实验组
-
-| Group | Augmentation |
-|---|---|
-| G0 | baseline augmentation |
-| G1 | geometry only |
-| G2 | image quality only |
-| G3 | occlusion and scale |
-| G4 | full GIS-Aug |
-
-通过标准：
-
-- 全量 val 不下降。
-- `QR`, `DM`, `BARCODE` 三类不能明显下降。
-- 如果建立 hard-case subset，则 hard-case 提升优先级高于普通 val 的微小提升。
-
-## 8. Full Model 组合实验
-
-组合顺序：
-
-```text
-Baseline
--> Baseline + QG-OBB Head
--> Baseline + SOF-FPN
--> Baseline + QG-OBB Head + SOF-FPN
--> Full Model + GIS-Aug
-```
-
-每一步必须记录：
-
-- model yaml
-- train command
-- PyTorch metrics
-- ONNX metrics
-- RKNN INT8 metrics
-- Params
-- FLOPs
-- model size
-- known issues
-
-## 9. 修正后的论文实验表
-
-### 9.1 主结果表
-
-| Model | Params | FLOPs | PyTorch mAP50 | PyTorch mAP50-95 | ONNX mAP50 | RKNN INT8 AP@0.5 | INT8 Drop |
-|---|---:|---:|---:|---:|---:|---:|---:|
-| RV1106-M2 baseline | 2.14M | 9.0G | 0.991 | 0.960 | 0.990494 | 0.9846 | 0.0059 |
-| + QG-OBB Head | | | | | | | |
-| + SOF-FPN | | | | | | | |
-| Full Model | | | | | | | |
-
-### 9.2 消融实验表
-
-| QG-OBB | SOF-FPN | GIS-Aug | mAP50 | mAP50-95 | RKNN AP@0.5 | INT8 Drop |
-|---|---|---|---:|---:|---:|---:|
-| No | No | No | 0.991 | 0.960 | 0.9846 | 0.0059 |
-| Yes | No | No | | | | |
-| No | Yes | No | | | | |
-| Yes | Yes | No | | | | |
-| Yes | Yes | Yes | | | | |
-
-### 9.3 部署实验表
-
-| Model | Format | Precision | Size | mAP50 / AP@0.5 | Drop | Latency |
-|---|---|---|---:|---:|---:|---:|
-| Baseline | PyTorch | FP32 | 4.6 MB | 0.991 | 0.000 | |
-| Baseline | ONNX | FP32 | 8.2 MB | 0.990494 | 0.0005 | 14.96 ms/image GPU |
-| Baseline | RKNN | INT8 | pending | 0.9846 | 0.0059 | simulator only |
-| Full Model | PyTorch | FP32 | | | | |
-| Full Model | RKNN | INT8 | | | | |
-
-说明：
-
-- RKNN latency 当前只记录 simulator，不作为实机部署结论。
-- 真实 RV1106 latency/FPS 等有设备后补测。
-
-## 10. 当前立即执行计划
-
-下一步先做 QG-OBB Head 设计审计。
-
-具体任务：
-
-1. 创建 `docs/qg_obb_head_design.md`。
-2. 阅读 `ultralytics/nn/modules/head.py` 中当前 OBB head。
-3. 记录当前训练输出、推理输出、ONNX 输出和 RKNN decode 的 shape。
-4. 明确 sin-cos angle branch 要修改的文件清单。
-5. 给出最小 sin-cos QG-OBB Head 的实现方案。
-6. 方案确认后再写代码。
-
-## 11. 修正后的风险清单
-
-| Risk | Impact | Mitigation |
+| 事项 | 决策 | 原因 |
 |---|---|---|
-| QG-OBB 改动破坏 ONNX 输出 | ONNX/RKNN 无法验证 | 先做设计审计和 shape test |
-| sin-cos loss 不收敛 | PyTorch mAP 下降 | 先 1 epoch smoke，再 20 epoch quick |
-| RKNN 不支持新增算子 | 部署链路中断 | 推理图只用基础算子 |
-| SOF-FPN 增加计算过多 | 不适合 RV1106 | Params/FLOPs 增幅限制 10% |
-| GIS-Aug 造成数据分布偏移 | val mAP 下降 | 分组实验，不一次开启全部增强 |
-| 无实机速度 | 部署结论不完整 | 明确记录 deferred，后续有设备补测 |
+| 立刻继续 official YOLOv8n-OBB gray e100 | 推迟 | 当前数据集已接近饱和，e100 结果后续有用，但不是当前优先事项 |
+| 保留 official YOLOv8n-OBB gray e20 | 保留为 sanity baseline | 已证明官方风格 baseline 可以训练，并验证灰度链路修复有效 |
+| 继续 QG 全链路验证 | 保留 | QG 已有 PyTorch/ONNX/RKNN 证据，可作为其他创新点闭环模板 |
+| 现在继续堆正式结果表 | 停止 | 会过度依赖容易验证集，结论证明力弱 |
+| 构建 hard validation set | 立即开始 | 这是判断创新点真实效果的关键 |
+| 搜索外部数据集 | 在数据审计方案稳定后开始 | 用于补充泛化证据 |
 
-## 12. 修正后阶段判断
+## 4. 阶段 A：创新点全链路闭环
 
-baseline 阶段已经完成。当前项目应进入模型改进阶段，第一优先级是 QG-OBB Head 的接口审计和最小 sin-cos 实验。
+目的：在正式实验前，先完成每个计划创新点的工程闭环。
+
+每个创新点都使用同一套闭环检查表：
+
+| 检查项 | 必要产物 |
+|---|---|
+| 论文来源与原理 | `docs/paper_<name>_cn.md` 或创新点映射记录 |
+| 代码实现 | 修改模块路径和配置路径 |
+| 构建检查 | 模型 summary、参数量、FLOPs |
+| 短训练 | 1 到 20 epoch smoke run |
+| ONNX 导出 | ONNX 文件、输出名称和 shape |
+| ONNX 验证 | 全量或小规模验证结果 |
+| RKNN 转换 | RKNN 文件、toolkit 版本、build log |
+| RKNN 评估 | 小规模 debug，再全量验证 |
+| 失败记录 | 错误日志和诊断 |
+
+通过标准：
+
+- 该创新点暂时不要求超过 baseline。
+- 必须能训练、导出、转换、推理和解码。
+- 如果无法通过 RKNN 转换，应标记为 research-only，而不是 deployment-ready。
+
+当前 QG 状态：
+
+- QG sin/cos head 已基本闭环。
+- 后续创新点应参考 QG 的闭环方式执行。
+
+## 5. 阶段 B：现有数据集审计
+
+构建新数据前，必须先审计当前数据集。
+
+必要分析包括：
+
+- 每类图片数和实例数。
+- PyTorch、ONNX、RKNN 下的 per-class AP。
+- 目标面积分布。
+- 长宽比分布。
+- 角度分布。
+- train/val 是否有重复或近重复风险。
+- QR、BARCODE、DM 的失败案例。
+
+类别分组：
+
+| 分组 | 类别 | 作用 |
+|---|---|---|
+| 主要困难类别 | QR、BARCODE、DM | 作为创新点效果判断的主要依据 |
+| 监控类别 | PDF、MPDF、MQR、RMQR | 用于回归检查 |
+| 饱和类别 | AP 接近满分的类别 | 保留在 full-val 中，但不作为主要创新证明 |
+
+输出产物：
+
+- `docs/dataset_audit_current.md`
+- `docs/experiments/<date>_dataset_audit.md`
+- 如果生成失败案例图，则保存到 `artifacts/local/` 下。
+
+## 6. 阶段 C：困难验证集 hard-val
+
+先从现有数据中构建一个固定的困难验证集。
+
+建议名称：
+
+```text
+datasets/industrial_symbol_hard.yaml
+```
+
+建议组成：
+
+| 来源 | 目标数量 |
+|---|---:|
+| QR 困难样本 | 200-400 张 |
+| BARCODE 困难样本 | 200-400 张 |
+| DM 困难样本 | 200-400 张 |
+| 其他回归类别 | 200-500 张 |
+
+困难样本标准：
+
+- 低对比度。
+- 小目标。
+- 大角度旋转。
+- 透视变形。
+- 运动模糊或失焦模糊。
+- 部分裁切或贴近边界。
+- 背景纹理干扰。
+- 类间相似样本。
+
+重要规则：
+
+- 不要把训练图像的增强副本作为主要 hard-val 证据。
+- 合成退化样本可以作为单独的鲁棒性测试集，但必须标记为 synthetic robustness，不能等同于自然泛化。
+
+评估指标：
+
+- mAP50 和 mAP50-95。
+- QR、BARCODE、DM 的 per-class AP。
+- 固定置信度阈值下的召回率。
+- ONNX 到 RKNN 的 mAP50 掉点。
+- 错误案例：误检、漏检、角度错误、定位错误。
+
+## 7. 阶段 D：外部数据集搜索与适配
+
+目的：测试当前方法是否只适配自建数据集。
+
+搜索优先级：
+
+1. Barcode / QR / DataMatrix 检测数据集。
+2. 工业包装、标签、符号数据集。
+3. 带 polygon 或 rotated bbox 标注的数据集。
+4. 只有普通 bbox 的数据集仅在目标接近矩形、方向可恢复时作为辅助。
+5. 通用 OBB 数据集只作为补充测试，不作为符号领域主要证据。
+
+数据集接收标准：
+
+- 可公开访问，允许科研使用。
+- 标注格式清晰。
+- 至少具备验证规模，最好有 500 个以上目标实例。
+- 能映射到 QR、BARCODE、DM，或有清晰的子集映射规则。
+- 转换过程可复现。
+
+输出产物：
+
+- `docs/external_dataset_search.md`
+- 每个接受数据集对应一份转换说明。
+- 格式检查通过后，再在 `datasets/` 下新增对应 yaml。
+
+## 8. 阶段 E：正式实验
+
+正式实验只在阶段 A-C 完成后启动。
+
+评估划分：
+
+| 数据集 | 作用 |
+|---|---|
+| `industrial_symbol.yaml` full val | 确认整体任务不退化 |
+| `industrial_symbol_hard.yaml` hard val | 作为创新点主要证明 |
+| external dataset yaml | 泛化能力检查 |
+
+模型分组：
+
+| 分组 | 模型 |
+|---|---|
+| 官方结构 baseline | Official YOLOv8n-OBB gray |
+| 部署 baseline | RV1106-M2 scalar |
+| 单创新点方法 | RV1106-M2 + 每个创新点 |
+| 组合方法 | RV1106-M2 + 兼容创新点组合 |
+
+每个正式模型记录：
+
+- 训练命令和环境。
+- 参数量、FLOPs、模型大小。
+- PyTorch mAP50 / mAP50-95。
+- ONNX mAP50 / mAP50-95。
+- RKNN mAP50 和延迟。
+- ONNX 到 RKNN 的掉点。
+- QR、BARCODE、DM 的 per-class AP。
+- hard-val 失败案例。
+
+## 9. 阶段 F：消融实验
+
+只对稳定创新点做消融。
+
+QG 相关消融：
+
+| 变量 | 取值 |
+|---|---|
+| 角度表示 | scalar vs sin/cos |
+| QG alignment loss | 0、0.10、0.25 |
+| QG unit loss | 0、0.02、0.05 |
+| 量化校准图片数量 | 100、500、1000 |
+| 评估集 | full-val、hard-val、external-val |
+
+规则：
+
+- 一次只改变一个主要变量。
+- 先做 20 epoch 消融。
+- 只有有希望的设置才晋级 100 epoch。
+
+## 10. 论文结论边界
+
+当前允许的结论：
+
+- 方法兼容 RV1106 部署链路。
+- 方法降低 ONNX 到 RKNN INT8 的精度掉点。
+- 方法在 QR、BARCODE、DM 困难样本上提升鲁棒性。
+- 方法保持 full-val 精度，同时改善部署稳定性。
+
+当前不允许的结论：
+
+- 达到通用 OBB 检测 SOTA。
+- 对所有符号类别都有普遍提升。
+- 在真实设备速度提升，除非完成真实硬件测试。
+- 具备外部泛化能力，除非完成外部数据集验证。
+
+## 11. 立即任务
+
+1. 将当前结果冻结为阶段性证据，而不是最终论文证据。
+2. 列出所有剩余创新点，并为每个创新点建立全链路闭环检查表。
+3. 用 short run 实现或补齐剩余创新点。
+4. 制定 `industrial_symbol_hard.yaml` 的设计和选择规则。
+5. 审计当前数据集分布和失败案例。
+6. 搜索并筛选外部数据集。
+7. hard-val 和 external-val 准备好后，再恢复正式对比实验。

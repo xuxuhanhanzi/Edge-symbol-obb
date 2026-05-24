@@ -30,6 +30,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--batch", type=int, default=1, help="Validation batch size for ONNX.")
     parser.add_argument("--device", default=0, help="CUDA device id or cpu.")
     parser.add_argument("--split", default="val", help="Dataset split to validate.")
+    parser.add_argument("--workers", type=int, default=0, help="Validation dataloader workers.")
     parser.add_argument("--conf", type=float, default=None, help="Optional confidence threshold.")
     parser.add_argument("--iou", type=float, default=0.7, help="NMS IoU threshold.")
     parser.add_argument("--max-det", type=int, default=300, help="Maximum detections per image.")
@@ -65,15 +66,28 @@ def install_grayscale_val_patch() -> None:
 
 
 def is_obb_4head_output(preds, nc: int) -> bool:
-    if not isinstance(preds, (list, tuple)) or len(preds) != 4:
+    if not isinstance(preds, (list, tuple)) or len(preds) not in (4, 5):
         return False
 
     feature_maps = [p for p in preds if hasattr(p, "ndim") and p.ndim == 4]
-    angle_maps = [p for p in preds if hasattr(p, "ndim") and p.ndim == 3]
-    if len(feature_maps) != 3 or len(angle_maps) != 1:
+    angle_maps = [p for p in preds if hasattr(p, "ndim") and p.ndim in (2, 3)]
+    if len(feature_maps) != 3 or len(angle_maps) not in (1, 2):
         return False
 
     return all(p.shape[1] >= nc + 4 for p in feature_maps)
+
+
+def decode_angle_output(angle: torch.Tensor, batch: int, anchors: int) -> torch.Tensor:
+    """Decode scalar theta or QG [sin(2theta), cos(2theta)] ONNX angle output."""
+    if angle.shape[-1] != anchors:
+        angle = angle.reshape(batch, -1, anchors)
+    if angle.shape[-1] != anchors:
+        raise ValueError(f"Angle output anchors={angle.shape[-1]} do not match box anchors={anchors}")
+    if angle.shape[1] == 1:
+        return angle
+    if angle.shape[1] == 2:
+        return 0.5 * torch.atan2(angle[:, 0:1], angle[:, 1:2])
+    raise ValueError(f"Unsupported angle output shape={tuple(angle.shape)}")
 
 
 def decode_obb_4head_output(preds, nc: int, device: torch.device, imgsz: int) -> torch.Tensor:
@@ -82,7 +96,7 @@ def decode_obb_4head_output(preds, nc: int, device: torch.device, imgsz: int) ->
     tensors = [p.to(device) for p in tensors]
 
     feature_maps = sorted([p for p in tensors if p.ndim == 4], key=lambda x: x.shape[-1], reverse=True)
-    angle = next(p for p in tensors if p.ndim == 3)
+    angle_tensors = [p for p in tensors if p.ndim in (2, 3)]
 
     channels = feature_maps[0].shape[1]
     reg_max = (channels - nc - 1) // 4 if channels >= nc + 5 else (channels - nc) // 4
@@ -102,10 +116,13 @@ def decode_obb_4head_output(preds, nc: int, device: torch.device, imgsz: int) ->
     anchors = anchors.transpose(0, 1).unsqueeze(0)
     stride_tensor = stride_tensor.transpose(0, 1).unsqueeze(0)
 
-    if angle.shape[-1] != dist.shape[-1]:
-        angle = angle.reshape(batch, 1, -1)
-    if angle.shape[-1] != dist.shape[-1]:
-        raise ValueError(f"Angle output anchors={angle.shape[-1]} do not match box anchors={dist.shape[-1]}")
+    if len(angle_tensors) == 1:
+        angle = decode_angle_output(angle_tensors[0], batch, dist.shape[-1])
+    elif len(angle_tensors) == 2:
+        angle = torch.cat([a.reshape(batch, 1, -1) for a in angle_tensors], 1)
+        angle = decode_angle_output(angle, batch, dist.shape[-1])
+    else:
+        raise ValueError(f"Unsupported number of angle outputs: {len(angle_tensors)}")
 
     dbox = dist2rbox(dist, angle, anchors, dim=1) * stride_tensor
     cls = cls.clamp(0, 1) if cls.min() >= 0 and cls.max() <= 1 else cls.sigmoid()
@@ -137,6 +154,7 @@ def main() -> int:
         batch=args.batch,
         device=args.device,
         split=args.split,
+        workers=args.workers,
         conf=args.conf,
         iou=args.iou,
         max_det=args.max_det,

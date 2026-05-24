@@ -18,6 +18,7 @@ from ultralytics import YOLO
 from ultralytics.models.yolo.obb.train import OBBTrainer
 from ultralytics.models.yolo.obb.val import OBBValidator
 from ultralytics.nn.autobackend import AutoBackend
+from ultralytics.utils import yaml_load
 import ultralytics.utils.checks as checks
 
 
@@ -33,10 +34,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--device", default=0, help="CUDA device id or cpu.")
     parser.add_argument("--amp", action="store_true", help="Enable AMP after the smoke path is known to work.")
     parser.add_argument("--cache", default=False, help="Ultralytics cache argument: False, ram, or disk.")
+    parser.add_argument("--angle", type=float, default=5.0, help="OBB angle loss gain.")
+    parser.add_argument("--qg-angle-align", type=float, default=0.25, help="QG unit-cycle alignment loss gain.")
+    parser.add_argument("--qg-angle-unit", type=float, default=0.05, help="QG vector norm regularization loss gain.")
     return parser.parse_args()
 
 
-def install_grayscale_patches() -> None:
+def install_grayscale_patches(model_spec: str | Path | None = None) -> None:
     """Patch train/val preprocessing and warmup for one-channel grayscale models."""
     checks.check_amp = lambda *args, **kwargs: True
 
@@ -44,21 +48,53 @@ def install_grayscale_patches() -> None:
     original_val_preprocess = OBBValidator.preprocess
     original_autobackend_warmup = AutoBackend.warmup
 
+    def expected_input_channels_from_yaml(spec):
+        if not spec:
+            return None
+        path = Path(spec)
+        if path.suffix.lower() not in {".yaml", ".yml"}:
+            return None
+        path = path if path.is_absolute() else ROOT / path
+        if not path.exists():
+            return None
+        try:
+            ch = yaml_load(path).get("ch", 3)
+            return int(ch[0] if isinstance(ch, (list, tuple)) else ch)
+        except Exception:
+            return None
+
+    configured_input_c = expected_input_channels_from_yaml(model_spec)
+
+    def expected_input_channels(model, default=None):
+        """Infer the model input channel count from the first parameter tensor."""
+        for candidate in (getattr(model, "model", None), model):
+            try:
+                return next(candidate.parameters()).shape[1]
+            except Exception:
+                continue
+        return default
+
     def custom_train_preprocess_batch(self, batch):
         batch = original_train_preprocess(self, batch)
-        if batch["img"].shape[1] == 3:
+        expected_c = expected_input_channels(
+            getattr(self, "model", None), configured_input_c or batch["img"].shape[1]
+        )
+        if expected_c == 1 and batch["img"].shape[1] == 3:
             batch["img"] = batch["img"].mean(dim=1, keepdim=True)
         return batch
 
     def custom_val_preprocess(self, batch):
         batch = original_val_preprocess(self, batch)
-        if batch["img"].shape[1] == 3:
+        expected_c = expected_input_channels(
+            getattr(self, "model", None), configured_input_c or batch["img"].shape[1]
+        )
+        if expected_c == 1 and batch["img"].shape[1] == 3:
             batch["img"] = batch["img"].mean(dim=1, keepdim=True)
         return batch
 
     def custom_autobackend_warmup(self, imgsz=(1, 1, 256, 256)):
         try:
-            expected_c = next(self.model.parameters()).shape[1]
+            expected_c = expected_input_channels(self.model)
             if isinstance(imgsz, tuple) and len(imgsz) == 4:
                 imgsz = (imgsz[0], expected_c, imgsz[2], imgsz[3])
         except Exception:
@@ -83,7 +119,7 @@ def normalize_cache_arg(value):
 
 def main() -> int:
     args = parse_args()
-    install_grayscale_patches()
+    install_grayscale_patches(args.model)
 
     model = YOLO(args.model)
     results = model.train(
@@ -97,6 +133,9 @@ def main() -> int:
         device=args.device,
         amp=args.amp,
         cache=normalize_cache_arg(args.cache),
+        angle=args.angle,
+        qg_angle_align=args.qg_angle_align,
+        qg_angle_unit=args.qg_angle_unit,
         save=True,
         save_period=-1,
         patience=0,

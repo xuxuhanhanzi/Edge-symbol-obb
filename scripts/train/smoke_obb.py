@@ -17,6 +17,7 @@ def main():
     checks = {
         "official_arch_reference": "configs/baseline/yolov8n_obb_official_arch.yaml",
         "rv1106_m2": "configs/rv1106/yolov8n_obb_rv1106_m2.yaml",
+        "rv1106_qg_sincos": "configs/rv1106/yolov8n_obb_rv1106_qg_sincos.yaml",
     }
     for name, cfg in checks.items():
         model = YOLO(cfg)
